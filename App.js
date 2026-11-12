@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
+  AppState,
   BackHandler,
   Image,
   KeyboardAvoidingView,
@@ -50,6 +51,7 @@ import {
   totals,
 } from './ledger';
 import { buildHtml, buildReport, buildSheetRows } from './exports';
+import { autoBackupName, isEmptyState, namesToPrune, whenText } from './autobackup';
 
 const STORAGE_KEY = 'ledger_v1';
 
@@ -71,21 +73,6 @@ const C = {
 // `menu` = [{ label, onPress }] shows a burger icon that opens a small dropdown.
 function TopBar({ title, onBack, actions = [], menu }) {
   const insets = useSafeAreaInsets();
-  const { width: winWidth } = useWindowDimensions();
-  const [open, setOpen] = useState(false);
-  const [menuPos, setMenuPos] = useState({ top: 0, right: 12 });
-  const burgerRef = useRef(null);
-
-  // Open the dropdown right under the burger button, aligned to its right edge.
-  function openMenu() {
-    if (!burgerRef.current) return;
-    burgerRef.current.measureInWindow((x, y, w, h) => {
-      // measureInWindow starts below the status bar, the (translucent) modal starts above it
-      setMenuPos({ top: y + insets.top + h + 4, right: Math.max(8, winWidth - (x + w)) });
-      setOpen(true);
-    });
-  }
-
   return (
     <View style={[s.topBar, { paddingTop: insets.top + 8 }]}>
       {onBack ? (
@@ -101,44 +88,95 @@ function TopBar({ title, onBack, actions = [], menu }) {
           <Text style={s.link}>{a.label}</Text>
         </Pressable>
       ))}
-      {menu ? (
-        <>
-          <Pressable ref={burgerRef} collapsable={false} onPress={openMenu} hitSlop={10} style={s.burger}>
-            <View style={s.burgerBar} />
-            <View style={s.burgerBar} />
-            <View style={s.burgerBar} />
-          </Pressable>
-          <Modal transparent statusBarTranslucent visible={open} animationType="fade" onRequestClose={() => setOpen(false)}>
-            <Pressable style={s.menuBackdrop} onPress={() => setOpen(false)}>
-              <View style={[s.menu, { top: menuPos.top, right: menuPos.right }]}>
-                {menu.map((m, i) => (
-                  <Pressable
-                    key={m.label}
-                    style={[s.menuItem, i > 0 && s.menuItemBorder]}
-                    onPress={() => {
-                      setOpen(false);
-                      m.onPress();
-                    }}
-                  >
-                    <Text style={s.menuText}>{m.label}</Text>
-                  </Pressable>
-                ))}
-              </View>
-            </Pressable>
-          </Modal>
-        </>
-      ) : null}
+      {menu ? <MenuButton menu={menu} /> : null}
     </View>
   );
 }
 
-// Home header: the circles icon and the app name.
-function HomeHeader() {
+// A bordered icon button (burger or gear) that opens a small dropdown right under it, aligned to
+// its right edge. `menu` = [{ label, onPress }]; `note` = optional text above the items;
+// `alert` = small red dot on the button.
+function MenuButton({ menu, icon = 'burger', note, noteColor, alert }) {
   const insets = useSafeAreaInsets();
+  const { width: winWidth } = useWindowDimensions();
+  const [open, setOpen] = useState(false);
+  const [menuPos, setMenuPos] = useState({ top: 0, right: 12 });
+  const buttonRef = useRef(null);
+
+  function openMenu() {
+    if (!buttonRef.current) return;
+    buttonRef.current.measureInWindow((x, y, w, h) => {
+      // measureInWindow starts below the status bar, the (translucent) modal starts above it
+      setMenuPos({ top: y + insets.top + h + 4, right: Math.max(8, winWidth - (x + w)) });
+      setOpen(true);
+    });
+  }
+
+  return (
+    <>
+      <Pressable ref={buttonRef} collapsable={false} onPress={openMenu} hitSlop={10} style={s.burger}>
+        {icon === 'gear' ? (
+          <Text style={s.gear}>{'\u2699\uFE0E'}</Text>
+        ) : (
+          <>
+            <View style={s.burgerBar} />
+            <View style={s.burgerBar} />
+            <View style={s.burgerBar} />
+          </>
+        )}
+        {alert ? <View style={s.alertDot} /> : null}
+      </Pressable>
+      <Modal transparent statusBarTranslucent visible={open} animationType="fade" onRequestClose={() => setOpen(false)}>
+        <Pressable style={s.menuBackdrop} onPress={() => setOpen(false)}>
+          <View style={[s.menu, { top: menuPos.top, right: menuPos.right, maxWidth: Math.min(winWidth - 16, 300) }]}>
+            {note ? (
+              <Text style={[s.menuNote, noteColor && { color: noteColor }]}>{note}</Text>
+            ) : null}
+            {menu.map((m, i) => (
+              <Pressable
+                key={m.label}
+                style={[s.menuItem, (i > 0 || note) && s.menuItemBorder]}
+                onPress={() => {
+                  setOpen(false);
+                  m.onPress();
+                }}
+              >
+                <Text style={s.menuText}>{m.label}</Text>
+              </Pressable>
+            ))}
+          </View>
+        </Pressable>
+      </Modal>
+    </>
+  );
+}
+
+// Home header: the circles icon and the app name.
+function HomeHeader({ auto }) {
+  const insets = useSafeAreaInsets();
+  const ready = auto.on && auto.folder && !auto.error;
+  const menu = !auto.on
+    ? [{ label: 'Turn on automatic backup', onPress: () => auto.setEnabled(true) }]
+    : [
+        ...(ready
+          ? [
+              { label: 'Back up now', onPress: auto.backupNow },
+              { label: 'Change folder', onPress: auto.chooseFolder },
+            ]
+          : [{ label: 'Choose folder', onPress: auto.chooseFolder }]),
+        { label: 'Turn off automatic backup', onPress: () => auto.setEnabled(false) },
+      ];
   return (
     <View style={[s.homeHeader, { paddingTop: insets.top + 10 }]}>
       <Image source={require('./assets/pool-icon.png')} style={s.homeIcon} resizeMode="contain" />
-      <Text style={s.homeTitle}>Pool Ledger</Text>
+      <Text style={[s.homeTitle, { flex: 1 }]}>Pool Ledger</Text>
+      <MenuButton
+        icon="gear"
+        menu={menu}
+        note={autoStatus(auto)}
+        noteColor={auto.on && auto.error ? C.red : undefined}
+        alert={auto.on && !!auto.error}
+      />
     </View>
   );
 }
@@ -266,6 +304,7 @@ function Root() {
   const [loaded, setLoaded] = useState(false);
   const [stack, setStack] = useState([{ name: 'home' }]);
   const [splashDone, setSplashDone] = useState(false);
+  const auto = useAutoBackup(state, loaded);
 
   // keep the logo screen up for a moment so it can be seen
   useEffect(() => {
@@ -333,7 +372,7 @@ function Root() {
 
   const top = stack[stack.length - 1];
   const nav = { push, pop, popTo };
-  const props = { state, apply, nav, params: top.params || {}, setState };
+  const props = { state, apply, nav, params: top.params || {}, setState, auto };
 
   switch (top.name) {
     case 'source':
@@ -353,7 +392,7 @@ function Root() {
 
 // ---------------------------------------------------------------- Home
 
-function HomeScreen({ state, nav, setState }) {
+function HomeScreen({ state, nav, setState, auto }) {
   const owed = owedBetween(state);
 
   const exportBackup = () => exportBackupFile(state);
@@ -383,7 +422,7 @@ function HomeScreen({ state, nav, setState }) {
 
   return (
     <View style={s.screen}>
-      <HomeHeader />
+      <HomeHeader auto={auto} />
       <ScrollView contentContainerStyle={s.body}>
         <View style={s.card}>
           <Text style={s.label}>Total balance</Text>
@@ -1090,6 +1129,176 @@ async function exportBackupFile(state) {
   );
 }
 
+// ---------------------------------------------------------------- automatic backups
+//
+// After every change the app writes auto-backup-<date>-<time>.json into the same folder the
+// exports use, and keeps the newest 10. Nothing leaves the phone and no other app or account is
+// involved. The files are normal backups: Import backup reads them.
+
+const AUTO_ON_KEY = 'ledger_autobackup_on'; // '0' = switched off, anything else = on
+const AUTO_LAST_KEY = 'ledger_autobackup_last';
+const AUTO_ASKED_KEY = 'ledger_autobackup_asked';
+const AUTO_DELAY_MS = 1500; // group quick changes into one file
+
+function useAutoBackup(state, loaded) {
+  const [on, setOn] = useState(true);
+  const [folder, setFolder] = useState(null); // readable folder name, or null when none chosen
+  const [last, setLast] = useState(null);
+  const [error, setError] = useState(null);
+  const [busy, setBusy] = useState(false);
+
+  const stateRef = useRef(state);
+  useEffect(() => {
+    stateRef.current = state;
+  }, [state]);
+  const onRef = useRef(true);
+  // The data (as plain JSON, without serialize()'s export timestamp) that is already backed up or
+  // was just loaded: only a difference from this triggers a backup.
+  const baseline = useRef(null);
+  const timer = useRef(null);
+  const writing = useRef(false);
+
+  const refreshFolder = useCallback(async () => {
+    try {
+      const saved = await AsyncStorage.getItem(SAVE_DIR_KEY);
+      setFolder(saved ? folderLabel(new Directory(saved)) : null);
+      return saved;
+    } catch (e) {
+      return null;
+    }
+  }, []);
+
+  // the saved settings
+  useEffect(() => {
+    (async () => {
+      try {
+        const flag = await AsyncStorage.getItem(AUTO_ON_KEY);
+        onRef.current = flag !== '0';
+        setOn(flag !== '0');
+        setLast(await AsyncStorage.getItem(AUTO_LAST_KEY));
+      } catch (e) {}
+      refreshFolder();
+    })();
+  }, [refreshFolder]);
+
+  // what was loaded counts as already backed up, so just opening the app writes nothing
+  useEffect(() => {
+    if (loaded && baseline.current === null) baseline.current = JSON.stringify(stateRef.current);
+  }, [loaded]);
+
+  // Writes the current data now. `prompt`: ask for a folder if none is chosen yet;
+  // `forcePick`: ask even if one is chosen (the old choice stays if the picker is cancelled).
+  const write = useCallback(async (prompt, forcePick) => {
+    if (writing.current) return;
+    const data = stateRef.current;
+    if (isEmptyState(data)) return;
+    writing.current = true;
+    setBusy(true);
+    try {
+      const text = serialize(data);
+      let saved = await AsyncStorage.getItem(SAVE_DIR_KEY);
+      if (!saved || forcePick) {
+        if (!prompt) return;
+        await askFolder();
+        const picked = await Directory.pickDirectoryAsync(DOWNLOADS_HINT);
+        await AsyncStorage.setItem(SAVE_DIR_KEY, picked.uri);
+        saved = picked.uri;
+        await refreshFolder();
+      }
+      const dir = new Directory(saved);
+      const file = dir.createFile(autoBackupName(new Date()), 'application/json');
+      file.write(text);
+      baseline.current = JSON.stringify(data);
+      const stamp = new Date().toISOString();
+      setLast(stamp);
+      setError(null);
+      AsyncStorage.setItem(AUTO_LAST_KEY, stamp).catch(() => {});
+      try {
+        const gone = namesToPrune(dir.list().map((x) => x.name));
+        dir.list().forEach((x) => {
+          if (gone.includes(x.name)) x.delete();
+        });
+      } catch (e) {
+        // tidying up is best effort: the backup itself is already safe
+      }
+    } catch (e) {
+      const msg = String((e && e.message) || e);
+      if (!/cancel/i.test(msg)) setError(msg);
+    } finally {
+      writing.current = false;
+      setBusy(false);
+    }
+  }, [refreshFolder]);
+
+  // On a change: wait a moment, then back up. Going to the background does it at once.
+  useEffect(() => {
+    if (!loaded || !on) return undefined;
+    if (baseline.current === null || JSON.stringify(state) === baseline.current) return undefined;
+    clearTimeout(timer.current);
+    timer.current = setTimeout(async () => {
+      const saved = await AsyncStorage.getItem(SAVE_DIR_KEY).catch(() => null);
+      if (!saved) {
+        // no folder yet: offer it once, never nag
+        const asked = await AsyncStorage.getItem(AUTO_ASKED_KEY).catch(() => '1');
+        if (asked) return;
+        await AsyncStorage.setItem(AUTO_ASKED_KEY, '1').catch(() => {});
+        Alert.alert(
+          'Back up automatically?',
+          'Pool Ledger can save a backup file on this phone after every change, so your data is ' +
+            'safe even if the app is reinstalled. It needs a folder to save into, chosen once.',
+          [
+            { text: 'Not now', style: 'cancel' },
+            { text: 'Choose folder', onPress: () => write(true) },
+          ]
+        );
+        return;
+      }
+      write(false);
+    }, AUTO_DELAY_MS);
+    return () => clearTimeout(timer.current);
+  }, [state, loaded, on, write]);
+
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (st) => {
+      if (st !== 'active' && onRef.current && timer.current) {
+        clearTimeout(timer.current);
+        if (baseline.current !== null && JSON.stringify(stateRef.current) !== baseline.current) write(false);
+      }
+    });
+    return () => sub.remove();
+  }, [write]);
+
+  const setEnabled = (value) => {
+    onRef.current = value;
+    setOn(value);
+    AsyncStorage.setItem(AUTO_ON_KEY, value ? '1' : '0').catch(() => {});
+    if (value) setError(null);
+  };
+
+  return {
+    on,
+    folder,
+    last,
+    error,
+    busy,
+    setEnabled,
+    // "Back up now" and "Choose folder": both may ask for the folder
+    backupNow: () => write(true),
+    chooseFolder: () => write(true, true),
+  };
+}
+
+// The sentence at the top of the gear menu.
+function autoStatus(auto) {
+  if (!auto.on) return 'Automatic backup is off. Your data is only backed up when you export it yourself.';
+  if (auto.error) return `Last backup failed: ${auto.error}`;
+  if (!auto.folder) return 'Automatic backup is not set up yet. Choose a folder to start.';
+  return (
+    `Automatic backup is on. Saved in ${auto.folder} after every change; the latest 10 are kept.` +
+    (auto.last ? `\nLast backup: ${whenText(auto.last)}` : '\nNo backup made yet.')
+  );
+}
+
 // ---------------------------------------------------------------- styles
 
 const s = StyleSheet.create({
@@ -1135,6 +1344,7 @@ const s = StyleSheet.create({
     alignItems: 'center',
     gap: 4,
   },
+  gear: { color: C.muted, fontSize: 22, lineHeight: 26, includeFontPadding: false },
   burgerBar: { width: 18, height: 2.5, borderRadius: 2, backgroundColor: C.muted },
   menuBackdrop: { flex: 1 },
   menu: {
@@ -1146,6 +1356,8 @@ const s = StyleSheet.create({
     borderRadius: 8,
     overflow: 'hidden',
   },
+  menuNote: { color: C.muted, fontSize: 13, lineHeight: 18, paddingVertical: 12, paddingHorizontal: 16 },
+  alertDot: { position: 'absolute', top: 5, right: 5, width: 9, height: 9, borderRadius: 5, backgroundColor: C.red },
   menuItem: { paddingVertical: 14, paddingHorizontal: 16 },
   menuItemBorder: { borderTopWidth: 1, borderTopColor: C.border },
   menuText: { color: C.text, fontSize: 15 },

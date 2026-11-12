@@ -33,6 +33,16 @@ old one and the data is lost. Uninstalling the app erases all data, so use *Expo
   folder inside Download (Android does not allow Download itself), for example `Pool Ledger`, and tap
   "Use this folder". It is remembered; the Saved message has a button to pick another folder.
 
+## Automatic backup
+- After every change the app saves `auto-backup-<date>-<time>.json` into the same folder as the
+  exports and keeps the newest 10 (other files in the folder are never touched). Changes made in
+  quick succession become one file; leaving the app saves at once. Nothing is sent anywhere.
+- Home shows the folder, the time of the last backup, and a red message if a save failed.
+  Buttons: Back up now, Change folder, Turn off / Turn on. The first change on a fresh install asks
+  once whether to set it up. An empty ledger is never backed up.
+- These are normal backups: restore with *Import backup*. They survive reinstalling the app.
+- `autobackup.js` holds the pure rules (names, which files to delete) and is covered by tests.
+
 ## Choices made where the brief was open
 - Credit amounts are green, debit amounts red.
 - Export covers the whole history of the source, or only the Cash / UPI rows when that filter is on.
